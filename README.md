@@ -33,22 +33,24 @@ macOS shows a plain icon for Now Playing. ORBT shows the **real cover** instead,
 A player card sits above the macOS lock screen: cover, title, seek bar, shuffle / previous / play / next / repeat and a favourite star. Click the small cover for fullscreen: a big cover with a soft colour wash, or, when Apple has made **moving artwork** for the album, the video fills the whole screen.
 
 <div align="center">
-<img src="assets/lockscreen-fullscreen.png?v=6" width="720" alt="Lock screen fullscreen with the big cover and the player card">
-<br><sub>Static cover: the big cover with a colour wash.</sub>
+<img src="assets/lockscreen-fullscreen.png?v=7" width="720" alt="Lock screen fullscreen with the big cover and the player card">
+<br><sub>Static cover: the big cover with a colour wash and the Liquid Glass clock.</sub>
 <br><br>
-<img src="assets/lockscreen-moving.png?v=6" width="720" alt="Lock screen fullscreen with Apple's moving artwork filling the screen">
+<img src="assets/lockscreen-moving.png?v=7" width="720" alt="Lock screen fullscreen with Apple's moving artwork filling the screen">
 <br><sub>Moving artwork: the video fills the screen (a still frame is shown here).</sub>
-<br><br><sub>Rendered from the app's own views (the real lock screen shows your wallpaper and a glass blur behind the card).</sub>
+<br><br><sub>Captured from the app's own views (the real lock screen shows your wallpaper behind the card).</sub>
 </div>
+
+**Your own clock.** Fullscreen draws its own clock: pick a font (serif, sans, rounded, mono, or your own fonts), a weight and a size in Settings, or **long-press the clock** to change its size and turn on **Liquid Glass digits**, with a slider from clear glass to fully lit glass. Text and buttons switch to the cover's own colour on bright covers so they stay readable.
 
 <div align="center">
 <sub>In fullscreen, two buttons in the bottom-right corner open <b>lyrics</b> (time-synced, the current line big and bright, tap a line to jump there) or the <b>queue</b>. Either button can be hidden in Settings.</sub>
 </div>
 
 <div align="center">
-<img src="assets/lockscreen-lyrics.png?v=6" width="720" alt="Lock screen lyrics view with the cover and player card on the left and synced lyrics on the right">
+<img src="assets/lockscreen-lyrics.png?v=7" width="720" alt="Lock screen lyrics view with the cover and player card on the left and synced lyrics on the right">
 <br><br>
-<img src="assets/lockscreen-queue.png?v=6" width="720" alt="Lock screen queue view listing the next songs">
+<img src="assets/lockscreen-queue.png?v=7" width="720" alt="Lock screen queue view listing the next songs">
 <br><sub>Both images use placeholder text, not real lyrics or songs.</sub>
 </div>
 
@@ -58,6 +60,7 @@ A player card sits above the macOS lock screen: cover, title, seek bar, shuffle 
 - Compact player: seek bar, previous / play / next, shuffle, repeat
 - **Lock screen player** with a fullscreen mode and Apple's **moving artwork** (when the album has it)
 - **Lyrics** and **queue** on the fullscreen lock screen, each with a button you can hide in Settings
+- **Custom lock screen clock**: font, weight, size and Liquid Glass digits (long-press the clock to edit)
 - Favourite (star) and equalizer presets for Apple Music; the lock screen card uses a Liquid Glass look by default (switch to a frosted look in Settings)
 - Works with **Apple Music** and **Spotify** (Spotify's real queue and a save button need an optional one-time connection, see below)
 - Light on resources (about 1% CPU while playing), no Dock icon, no audio recording

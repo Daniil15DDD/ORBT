@@ -145,6 +145,9 @@ final class GlassBackground: NSView {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
+    /// Changes how milky the glass is (clear = barely any tint) without rebuilding it.
+    func setTint(_ color: NSColor) { tint.backgroundColor = color.cgColor }
+
     private var snap: CALayer?
     private static let ci = CIContext()
 
@@ -674,9 +677,13 @@ final class LockBackdropView: ClickView {
     private let timeL = NSTextField(labelWithString: "")
     private let compactL = NSTextField(labelWithString: "")
     /// Liquid Glass behind the clock ("lockClockGlass"), and the editor a long press on the clock opens.
-    private let glassText = GlassTextView(frame: .zero)
+    private let glassText = DigitGlassView(frame: .zero)
+    private let lensText = GlassTextView(frame: .zero)   // Apple's Liquid Glass lens (the slider-knob bubble), over the player glass
     private let editor = ClockEditorView(frame: .zero)
     private var editorOpen = false
+    /// With Liquid Glass on and a plain cover (no video) the clock is the big one, set in the band above the cover: a 20 pt line would show no glass.
+    private var bigClockOverCover: Bool { UserDefaults.standard.bool(forKey: "lockClockGlass") && DigitGlassView.available && media.motionURL == nil }
+    private var lastBigClock = false
     private var pressTimer: Timer?
     private var bag = Set<AnyCancellable>()
     private var timer: Timer?
@@ -726,9 +733,9 @@ final class LockBackdropView: ClickView {
         video.isHidden = true
         for l in [dateL, timeL, compactL] { l.alignment = .center; l.textColor = .white; l.lineBreakMode = .byClipping; l.wantsLayer = true }
         applyTheme()
-        [wash, shade, video, scrim, bigShadow, big, glassText, dateL, timeL, compactL, lyricsView, queueView, modePill, editor].forEach(addSubview)
+        [wash, shade, video, scrim, bigShadow, big, glassText, lensText, dateL, timeL, compactL, lyricsView, queueView, modePill, editor].forEach(addSubview)
         editor.isHidden = true
-        editor.onChange = { [weak self] in self?.layoutContent(); self?.updateClock() }
+        editor.onChange = { [weak self] in self?.layoutContent(); self?.refresh() }
         lyricsView.isHidden = true; queueView.isHidden = true
         lyricsView.onSeek = { [weak media] t in media?.seek(to: t) }
         queueView.onPlay = { [weak media] i in media?.playQueueItem(i) }
@@ -799,6 +806,13 @@ final class LockBackdropView: ClickView {
         return base.fontDescriptor.withDesign(design).flatMap { NSFont(descriptor: $0, size: size) } ?? base
     }
 
+    /// `font`, shrunk if the widest time ("00:00") would not fit in `box`.
+    private static func fitted(_ font: NSFont, in box: CGSize) -> NSFont {
+        let s = NSAttributedString(string: "00:00", attributes: [.font: font]).size()
+        let k = min(1, box.width / max(s.width, 1), box.height / max(s.height, 1))
+        return k < 1 ? (NSFont(descriptor: font.fontDescriptor, size: font.pointSize * k) ?? font) : font
+    }
+
     func layoutContent() {
         let w = bounds.width, h = bounds.height
         // Liqoria layout: cover as wide as the card, its top ~29% down the screen, card ~72% down with a clear gap between.
@@ -810,12 +824,16 @@ final class LockBackdropView: ClickView {
         layoutPill()
         // oversized so the blurred colours spread across the whole screen
         wash.frame = bounds.insetBy(dx: -w * 0.2, dy: -h * 0.2)
-        [shade, video, scrim, glassText].forEach { $0.frame = bounds }
+        [shade, video, scrim, glassText, lensText].forEach { $0.frame = bounds }
         dateL.font = clockFont(h * 0.032, .semibold)
         let weights: [String: NSFont.Weight] = ["ultralight": .ultraLight, "light": .light, "regular": .regular, "bold": .bold]
-        timeL.font = clockFont(h * 0.15, weights[UserDefaults.standard.string(forKey: "lockClockWeight") ?? ""] ?? .light)
-        dateL.frame = NSRect(x: 0, y: h * 0.84, width: w, height: h * 0.05)
-        timeL.frame = NSRect(x: 0, y: h * 0.66, width: w, height: h * 0.19)
+        let over = bigClockOverCover
+        dateL.frame = over ? NSRect(x: 0, y: h * 0.925, width: w, height: h * 0.045) : NSRect(x: 0, y: h * 0.84, width: w, height: h * 0.05)
+        timeL.frame = over ? NSRect(x: 0, y: h * 0.74, width: w, height: h * 0.18) : NSRect(x: 0, y: h * 0.66, width: w, height: h * 0.19)
+        let wanted = clockFont(h * (over ? 0.105 : 0.15), weights[UserDefaults.standard.string(forKey: "lockClockWeight") ?? ""] ?? .light)
+        // Automatic size: whatever the style, weight and size slider ask for, the clock shrinks to fit its space. Over a plain cover that
+        // space ends above the cover, so the clock can never reach the artwork; it is also never wider than the screen.
+        timeL.font = Self.fitted(wanted, in: CGSize(width: w * 0.86, height: timeL.frame.height * 0.95))
         compactL.frame = NSRect(x: 0, y: h * 0.902 - 14, width: w, height: 28)
         editor.frame = NSRect(x: w / 2 - 130, y: h * 0.46, width: 260, height: 150)
     }
@@ -861,7 +879,7 @@ final class LockBackdropView: ClickView {
         NSAnimationContext.runAnimationGroup { ctx in
             ctx.duration = reduce ? 0.2 : 0.65; ctx.timingFunction = .arrive
             self.big.animator().frame = target; self.bigShadow.animator().frame = target
-            [self.dateL, self.timeL, self.compactL, self.glassText].forEach { $0.animator().alphaValue = list ? 0 : 1 }
+            [self.dateL, self.timeL, self.compactL, self.glassText, self.lensText].forEach { $0.animator().alphaValue = list ? 0 : 1 }
             self.shade.animator().alphaValue = self.shadeLevel
         }
         let outgoing: NSView? = old == .lyrics ? lyricsView : old == .queue ? queueView : nil
@@ -899,12 +917,13 @@ final class LockBackdropView: ClickView {
         pillGlass.setScreenshotBackdrop(GlassBackground.glassCrop(full, rect: modePill.frame, scale: 2))
     }
 
+
     /// README images only: opens a list with sample content, without animation.
     func previewList(_ m: Mode, lyrics: [LyricLine], queue: [QueueItem]) {
         mode = m
         layoutContent()
         lyricsView.isHidden = m != .lyrics; queueView.isHidden = m != .queue
-        [dateL, timeL, compactL, glassText].forEach { $0.alphaValue = 0 }
+        [dateL, timeL, compactL, glassText, lensText].forEach { $0.alphaValue = 0 }
         shade.alphaValue = shadeLevel
         updatePillSelection(animated: false)
         if m == .lyrics { lyricsView.set(.synced(lyrics)); lyricsView.setPosition(lyrics.count > 2 ? lyrics[2].time : 0) } else { queueView.set(queue) }
@@ -981,7 +1000,7 @@ final class LockBackdropView: ClickView {
         lastPlaying = nil
     }
 
-    private var fadingViews: [NSView] { [big, bigShadow, video, wash, shade, scrim, dateL, timeL, compactL, glassText, modePill] }
+    private var fadingViews: [NSView] { [big, bigShadow, video, wash, shade, scrim, dateL, timeL, compactL, glassText, lensText, modePill] }
 
     /// README image only: a still frame of the moving artwork stands in for the video (an AVPlayer can't render offscreen).
     func previewMotionStill(_ img: NSImage) {
@@ -1017,7 +1036,7 @@ final class LockBackdropView: ClickView {
         let k: CGFloat = playing ? 1 : 0.9
         [big, bigShadow].forEach { $0.animateScale(to: k, from: k * 0.94) }   // the cover settles into place instead of just appearing
         video.fadeIn(to: imageAlpha, duration: 0.8)
-        [wash, dateL, timeL, compactL, glassText, modePill].forEach { $0.fadeIn(to: 1, duration: 0.8) }
+        [wash, dateL, timeL, compactL, glassText, lensText, modePill].forEach { $0.fadeIn(to: 1, duration: 0.8) }
         shade.fadeIn(to: shadeTarget, duration: 0.8)
         scrim.fadeIn(to: scrimTarget, duration: 0.8)
         timer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in self?.updateClock() }
@@ -1034,7 +1053,7 @@ final class LockBackdropView: ClickView {
             self.setActive(false, keepVideo: true)
         }
         [big, bigShadow].forEach { $0.fadeOut(duration: 0.25) }
-        [video, wash, shade, scrim, dateL, timeL, compactL, glassText, modePill, lyricsView, queueView].forEach { $0.fadeOut(duration: 0.5) }
+        [video, wash, shade, scrim, dateL, timeL, compactL, glassText, lensText, modePill, lyricsView, queueView].forEach { $0.fadeOut(duration: 0.5) }
         CATransaction.commit()
     }
 
@@ -1056,9 +1075,11 @@ final class LockBackdropView: ClickView {
             else { big.layer?.transform = big.scaled(scale); bigShadow.layer?.transform = bigShadow.scaled(scale) }
             NSAnimationContext.runAnimationGroup { $0.duration = 0.35; $0.timingFunction = .arrive; self.big.animator().alphaValue = alpha; self.bigShadow.animator().alphaValue = alpha; self.video.animator().alphaValue = alpha }
         }
-        timeL.isHidden = motion == nil
-        dateL.isHidden = motion == nil
-        compactL.isHidden = motion != nil
+        let bigClock = motion != nil || bigClockOverCover
+        if bigClock != lastBigClock { lastBigClock = bigClock; layoutContent() }   // the big clock sits somewhere else over a cover than over a video
+        timeL.isHidden = !bigClock
+        dateL.isHidden = !bigClock
+        compactL.isHidden = bigClock
         shade.alphaValue = shadeLevel
         if mode != .cover, let i = media.info, contentKey != i.key + (i.shuffle ? "|s" : "") { reloadContent() }   // the song changed under an open list
         if media.artwork !== lastArt {
@@ -1166,7 +1187,7 @@ final class LockBackdropView: ClickView {
         let df = DateFormatter(); df.dateFormat = "EEE d MMM"
         let time = tf.string(from: now), date = df.string(from: now)
         // With Liquid Glass the digits are drawn by glassText instead, so the plain text goes clear
-        let glassOn = UserDefaults.standard.bool(forKey: "lockClockGlass")
+        let glassOn = UserDefaults.standard.bool(forKey: "lockClockGlass") && DigitGlassView.available
         let ink = glassOn ? NSColor.clear : uiColor
         timeL.stringValue = time
         dateL.stringValue = date
@@ -1177,16 +1198,19 @@ final class LockBackdropView: ClickView {
         compactL.attributedStringValue = s
 
         glassText.isHidden = !glassOn
+        lensText.isHidden = !glassOn || !GlassTextView.available
         guard glassOn else { return }
         let d = UserDefaults.standard
         let amount = d.object(forKey: "lockClockGlassy") == nil ? 0.6 : d.double(forKey: "lockClockGlassy")   // 0 = fully clear, 1 = glassiest
         glassText.set([timeL, dateL, compactL].filter { !$0.isHidden }.map { (text: $0.attributedStringValue, box: $0.frame) }, glass: CGFloat(amount))
+        lensText.set([timeL, dateL, compactL].filter { !$0.isHidden }.map { (text: $0.attributedStringValue, box: $0.frame) }, glass: 0)   // always the pure clear lens: the bending and the bright rim
     }
 
     /// Where the clock's text sits: the time and date while a video plays, otherwise the small line at the top.
     private func clockRect() -> NSRect {
         let w = bounds.width, h = bounds.height
         if media.motionURL != nil { return NSRect(x: w * 0.3, y: h * 0.655, width: w * 0.4, height: h * 0.245) }
+        if bigClockOverCover { return NSRect(x: w * 0.25, y: h * 0.74, width: w * 0.5, height: h * 0.23) }
         return NSRect(x: w * 0.3, y: h * 0.902 - 18, width: w * 0.4, height: 36)
     }
 
@@ -1222,70 +1246,332 @@ final class LockBackdropView: ClickView {
     }
 }
 
-/// The clock digits as glass, drawn the way the card's glass looks: a clear body with a soft shine from the top, a bright rim that
-/// fades round the shape (bright top-left, dim bottom-right, like the card's edge) and a soft shadow. Built from the glyph outlines,
-/// so it fits any font.
-/// shortcut: no live blur (a blur layer can't be cut to letter shapes without going blank); the picture behind is already blurred.
+/// The clock digits in Apple's own Liquid Glass. An NSGlassEffectView (macOS 26+) draws a rounded rectangle whose shape comes from an
+/// SDF element layer, and that element also takes its shape from a distance-field image ("contents" mode). So the digits are drawn,
+/// turned into a signed distance field and handed to it: the system then renders real glass (refraction at the edges, blur,
+/// highlights) in the shape of the numerals. It uses the system's clear lens variant, the glass of a slider knob being dragged (the
+/// default panel variant is a heavy grey frost here); `glass` (0...1) adds a milky fill on top, like the iPhone clock's opacity slider.
+/// shortcut: relies on private Core Animation details (the element's "contents" mode, glassBackground filter inputs) found by
+/// inspecting NSGlassEffectView on macOS 27; without them the clock stays plain digits (see `available`).
 final class GlassTextView: NSView {
-    private let shadowL = CAShapeLayer()
-    private let body = CAShapeLayer()
-    private let shine = CAGradientLayer(), shineMask = CAShapeLayer()
-    private let rim = CAGradientLayer(), rimMask = CAShapeLayer()
+    static let available = NSClassFromString("NSGlassEffectView") != nil && NSClassFromString("CASDFElementLayer") != nil
+    private var glassView: NSView?
+    private var shape: CGImage?
+    private var glass: CGFloat = 0.6
+    private weak var tunedFilter: NSObject?
+    private var tunedGlass: CGFloat = -1
+    private var key = ""
+    private static let range: CGFloat = 40   // points of distance the field encodes on each side of the outline
+
+    override init(frame: NSRect) { super.init(frame: frame); wantsLayer = true }
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    /// Never takes clicks, so a tap on the clock reaches the backdrop behind it.
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+    /// Shows each line (its text and the box it is centred in, in this view's coordinates) as glass.
+    func set(_ lines: [(text: NSAttributedString, box: CGRect)], glass g: CGFloat) {
+        guard Self.available else { return }
+        var placed: [(CTLine, CGPoint)] = []
+        var area = CGRect.null
+        for (text, box) in lines {
+            let white = NSMutableAttributedString(attributedString: text)   // the label's own ink is clear while the glass shows
+            white.addAttribute(.foregroundColor, value: NSColor.white, range: NSRange(location: 0, length: white.length))
+            let line = CTLineCreateWithAttributedString(white)
+            let b = CTLineGetBoundsWithOptions(line, [])   // typographic bounds: centres the same way the plain label does
+            let origin = CGPoint(x: box.midX - b.midX, y: box.midY - b.midY)
+            placed.append((line, origin))
+            area = area.union(b.offsetBy(dx: origin.x, dy: origin.y))
+        }
+        guard !area.isNull else { glassView?.isHidden = true; return }
+        area = area.insetBy(dx: -Self.range, dy: -Self.range).integral
+        let k = lines.map { $0.text.string }.joined(separator: "|") + "\(area)"
+        if k != key {   // the field is rebuilt only when the time or the layout changes
+            key = k
+            shape = Self.distanceField(placed, area: area)
+            if glassView == nil, let cls = NSClassFromString("NSGlassEffectView") as? NSView.Type {
+                let v = cls.init(frame: .zero)
+                v.setValue(1, forKey: "style")   // .clear
+                v.setValue(0, forKey: "cornerRadius")
+                v.setValue(11, forKey: "_variant")   // the clear lens the system uses for a slider knob being dragged: no frost, refraction at the edges
+                addSubview(v)
+                glassView = v
+            }
+            glassView?.frame = area
+        }
+        glassView?.isHidden = false
+        glass = g
+        apply()
+    }
+
+    private static func all(_ l: CALayer) -> [CALayer] { [l] + (l.sublayers ?? []).flatMap(all) }
+
+    private var watched: [CALayer] = []
+    /// NSGlassEffectView puts its element back to a rounded rectangle whenever it updates itself; watching the element's mode puts the
+    /// digits back within that same update, before anything reaches the screen.
+    private func watch(_ elements: [CALayer]) {
+        guard elements.map(ObjectIdentifier.init) != watched.map(ObjectIdentifier.init) else { return }
+        watched.forEach { $0.removeObserver(self, forKeyPath: "mode") }
+        elements.forEach { $0.addObserver(self, forKeyPath: "mode", options: [], context: nil) }
+        watched = elements
+    }
+    override func observeValue(forKeyPath keyPath: String?, of object: Any?, change: [NSKeyValueChangeKey: Any]?, context: UnsafeMutableRawPointer?) {
+        apply(retries: 0)
+    }
+    deinit { watched.forEach { $0.removeObserver(self, forKeyPath: "mode") } }
+
+    /// Hands the digits' shape and the tuned glass to the system's layers. NSGlassEffectView builds them lazily and may rebuild them,
+    /// so this runs on every clock tick (cheap when nothing changed) and keeps retrying for a moment while they are not there yet.
+    private func apply(retries: Int = 20) {
+        guard let shape else { return }
+        let layers = glassView?.layer.map(Self.all) ?? []   // no layer yet before its first display: retried below
+        let elements = layers.filter { String(describing: type(of: $0)) == "CASDFElementLayer" }
+        guard !elements.isEmpty else {
+            if retries > 0 { DispatchQueue.main.asyncAfter(deadline: .now() + 0.03) { self.apply(retries: retries - 1) } }
+            return
+        }
+        CATransaction.begin(); CATransaction.setDisableActions(true)
+        defer { CATransaction.commit() }
+        watch(elements)
+        for e in elements where (e.value(forKey: "mode") as? String) != "contents" || (e.contents as AnyObject?) !== shape {
+            e.setValue("contents", forKey: "mode")
+            e.contents = shape
+            e.contentsGravity = .resize
+            e.contentsScale = 2
+            e.setValue(Self.range, forKey: "contentsZeroValueDistance")   // field value 0 = this far outside the outline
+            e.setValue(-Self.range, forKey: "contentsOneValueDistance")   // field value 1 = this far inside
+        }
+        for l in layers where String(describing: type(of: l)) == "CASDFLayer" {
+            // clean digit edges: the system's smoothing of 8 suits big rounded panels but blurs letters into a smudge
+            if (l.value(forKey: "smoothness") as? Double) != 2 { l.setValue(2, forKey: "smoothness") }
+        }
+        // the slider sets the material's opacity, like the iPhone clock's: 0 is Apple's clear lens as it is (the slider-knob bubble), more makes it milky
+        for l in layers {
+            guard var fs = l.filters as? [NSObject],
+                  let i = fs.firstIndex(where: { ($0.value(forKey: "type") as? String) == "glassBackground" }) else { continue }
+            if fs[i] === tunedFilter && tunedGlass == glass { continue }
+            guard let f = (fs[i] as? NSCopying)?.copy(with: nil) as? NSObject else { continue }   // a new object, or the render server keeps the old values
+            // the lens variant leaves its "face" pass off; turning it on with a raised black point lifts the darks toward white: milky glass
+            f.setValue(glass, forKey: "inputFaceOpacity")
+            f.setValue(0.5 * glass, forKey: "inputFaceColorMatrixBlack")
+            fs[i] = f
+            l.filters = fs
+            tunedFilter = f; tunedGlass = glass
+        }
+    }
+
+    /// The digits as a signed distance field at 2 pixels per point: 0.5 on the outline, rising to 1 at `range` points inside and
+    /// falling to 0 at `range` points outside (two-pass chamfer distance).
+    private static func distanceField(_ lines: [(CTLine, CGPoint)], area: CGRect) -> CGImage? {
+        let W = Int(area.width * 2), H = Int(area.height * 2)
+        guard W > 0, H > 0 else { return nil }
+        var mask = [UInt8](repeating: 0, count: W * H)
+        mask.withUnsafeMutableBytes { buf in
+            guard let ctx = CGContext(data: buf.baseAddress, width: W, height: H, bitsPerComponent: 8, bytesPerRow: W,
+                                      space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return }
+            ctx.scaleBy(x: 2, y: 2)
+            ctx.translateBy(x: -area.minX, y: -area.minY)
+            for (line, origin) in lines { ctx.textPosition = origin; CTLineDraw(line, ctx) }
+        }
+        // exact squared distance to the nearest pixel where `feature` holds (Felzenszwalb & Huttenlocher): no stair-steps on curves
+        func squaredDistance(_ feature: (Int) -> Bool) -> [Float] {
+            let inf: Float = 1e20, n = max(W, H)
+            var g = [Float](repeating: 0, count: W * H)
+            for i in 0..<(W * H) { g[i] = feature(i) ? 0 : inf }
+            var f = [Float](repeating: 0, count: n), d = f, z = [Float](repeating: 0, count: n + 1), v = [Int](repeating: 0, count: n)
+            func pass(_ len: Int) {
+                func meet(_ q: Int, _ p: Int) -> Float { ((f[q] + Float(q * q)) - (f[p] + Float(p * p))) / Float(2 * (q - p)) }
+                var k = 0; v[0] = 0; z[0] = -inf; z[1] = inf
+                for q in 1..<max(len, 1) {
+                    var sv = meet(q, v[k])
+                    while sv <= z[k] { k -= 1; sv = meet(q, v[k]) }
+                    k += 1; v[k] = q; z[k] = sv; z[k + 1] = inf
+                }
+                k = 0
+                for q in 0..<len { while z[k + 1] < Float(q) { k += 1 }; d[q] = Float((q - v[k]) * (q - v[k])) + f[v[k]] }
+            }
+            for x in 0..<W { for y in 0..<H { f[y] = g[y * W + x] }; pass(H); for y in 0..<H { g[y * W + x] = d[y] } }
+            for y in 0..<H { for x in 0..<W { f[x] = g[y * W + x] }; pass(W); for x in 0..<W { g[y * W + x] = d[x] } }
+            return g
+        }
+        let toShape = squaredDistance { mask[$0] > 127 }, toOutside = squaredDistance { mask[$0] <= 127 }
+        var px = [UInt8](repeating: 0, count: W * H)
+        for i in 0..<(W * H) {
+            let cover = CGFloat(mask[i]) / 255
+            // edge pixels use their anti-aliased coverage, the rest the exact distance: a smooth field, so smooth glass edges
+            let sdPixels = cover > 0.02 && cover < 0.98 ? 0.5 - cover
+                : cover >= 0.5 ? -(CGFloat(toOutside[i].squareRoot()) - 0.5) : CGFloat(toShape[i].squareRoot()) - 0.5
+            let sd = sdPixels / 2   // points, negative inside
+            px[i] = UInt8(max(0, min(255, (0.5 - sd / (2 * range)) * 255)))
+        }
+        guard let provider = CGDataProvider(data: Data(px) as CFData) else { return nil }
+        return CGImage(width: W, height: H, bitsPerComponent: 8, bitsPerPixel: 8, bytesPerRow: W, space: CGColorSpaceCreateDeviceGray(),
+                       bitmapInfo: CGBitmapInfo(rawValue: 0), provider: provider, decode: nil, shouldInterpolate: true, intent: .defaultIntent)
+    }
+}
+
+/// The clock digits in the player card's own glass (GlassBackground): the same blur and tint, cut to the shape of the numerals, with
+/// the same bright gradient edge drawn along their outline and the same soft shine across the top. Same API as GlassTextView.
+final class DigitGlassView: NSView {
+    static let available = true
+    private let glass = GlassBackground(frame: .zero, radius: 0)
+    private let fillMask = CAShapeLayer()
+    private let edge = CAGradientLayer()
+    private let edgeMask = CAShapeLayer()
+    private let halo = CAShapeLayer()   // a soft dark halo under the digits, so thin glass still separates from a busy picture
+    private let haloMask = CAShapeLayer()   // keeps the halo outside the digits: dark under the glass would turn it grey
+    private let bevel = CALayer()       // the lit, rounded edge of the glass: highlights and darker rims, like the iPhone clock's
+    private var bevelKey = ""
 
     override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        shadowL.shadowColor = NSColor.black.cgColor
-        shadowL.shadowRadius = 14; shadowL.shadowOffset = CGSize(width: 0, height: -6)
-        shine.startPoint = CGPoint(x: 0.5, y: 1); shine.endPoint = CGPoint(x: 0.5, y: 0.3)   // top of the digits is y = 1
-        shineMask.fillColor = NSColor.white.cgColor
-        shine.mask = shineMask
-        rim.startPoint = CGPoint(x: 0, y: 1); rim.endPoint = CGPoint(x: 1, y: 0)
-        rimMask.fillColor = nil; rimMask.strokeColor = NSColor.white.cgColor; rimMask.lineJoin = .round
-        rim.mask = rimMask
-        [shadowL, body, shine, rim].forEach { layer?.addSublayer($0) }
+        bevel.contentsGravity = .resize; bevel.contentsScale = 2
+        halo.fillColor = NSColor.black.withAlphaComponent(0.18).cgColor
+        halo.shadowColor = NSColor.black.cgColor
+        halo.shadowOpacity = 0.5; halo.shadowRadius = 12; halo.shadowOffset = CGSize(width: 0, height: -3)
+        haloMask.fillRule = .evenOdd; haloMask.fillColor = NSColor.white.cgColor
+        halo.mask = haloMask
+        layer?.addSublayer(halo)
+        addSubview(glass)
+        fillMask.fillColor = NSColor.white.cgColor
+        glass.layer?.mask = fillMask
+        layer?.addSublayer(bevel)
+        // a crisp thin rim on top of the bevel (the bevel does the thickness)
+        edge.colors = [NSColor.white.withAlphaComponent(0.9).cgColor, NSColor.white.withAlphaComponent(0.25).cgColor, NSColor.white.withAlphaComponent(0.6).cgColor]
+        edge.startPoint = CGPoint(x: 0, y: 1); edge.endPoint = CGPoint(x: 1, y: 0)
+        edgeMask.fillColor = nil; edgeMask.strokeColor = NSColor.white.cgColor; edgeMask.lineWidth = 1.3
+        edge.mask = edgeMask
+        layer?.addSublayer(edge)
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
 
     /// Never takes clicks, so a tap on the clock reaches the backdrop behind it.
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
 
-    /// Draws each line (its text and the box it is centred in, in this view's coordinates). `glass` runs from 0 (nearly clear) to 1
-    /// (glassiest): it scales the rim, the shine and the shadow, and adds only a little frost to the body.
+    /// Shows each line (its text and the box it is centred in, in this view's coordinates) as glass. `g` (0...1) is how milky it is.
     func set(_ lines: [(text: NSAttributedString, box: CGRect)], glass g: CGFloat) {
-        let path = CGMutablePath()
+        let outline = CGMutablePath()
+        var area = CGRect.null
         for (text, box) in lines {
             let line = CTLineCreateWithAttributedString(text)
-            let bounds = CTLineGetBoundsWithOptions(line, [])   // typographic bounds: centres the same way the plain label does
-            let origin = CGPoint(x: box.midX - bounds.midX, y: box.midY - bounds.midY)
-            for run in CTLineGetGlyphRuns(line) as? [CTRun] ?? [] {
-                guard let font = (CTRunGetAttributes(run) as NSDictionary)[kCTFontAttributeName] else { continue }
+            let b = CTLineGetBoundsWithOptions(line, [])   // centres the same way the plain label does
+            let origin = CGPoint(x: box.midX - b.midX, y: box.midY - b.midY)
+            for run in (CTLineGetGlyphRuns(line) as? [CTRun]) ?? [] {
+                guard let font = (CTRunGetAttributes(run) as NSDictionary)[kCTFontAttributeName as String] else { continue }
                 let n = CTRunGetGlyphCount(run)
-                var glyphs = [CGGlyph](repeating: 0, count: n), points = [CGPoint](repeating: .zero, count: n)
-                CTRunGetGlyphs(run, CFRange(), &glyphs); CTRunGetPositions(run, CFRange(), &points)
+                var glyphs = [CGGlyph](repeating: 0, count: n), pos = [CGPoint](repeating: .zero, count: n)
+                CTRunGetGlyphs(run, CFRange(location: 0, length: n), &glyphs)
+                CTRunGetPositions(run, CFRange(location: 0, length: n), &pos)
                 for i in 0..<n {
-                    guard let g = CTFontCreatePathForGlyph(font as! CTFont, glyphs[i], nil) else { continue }
-                    path.addPath(g, transform: CGAffineTransform(translationX: origin.x + points[i].x, y: origin.y + points[i].y))
+                    guard let gp = CTFontCreatePathForGlyph(font as! CTFont, glyphs[i], nil) else { continue }
+                    outline.addPath(gp, transform: CGAffineTransform(translationX: origin.x + pos[i].x, y: origin.y + pos[i].y))
                 }
             }
+            area = area.union(b.offsetBy(dx: origin.x, dy: origin.y))
         }
+        guard !area.isNull else { isHidden = true; return }
+        isHidden = false
+        area = area.insetBy(dx: -4, dy: -4).integral
+        var shift = CGAffineTransform(translationX: -area.minX, y: -area.minY)
+        // merged into one clean outline: the system font draws some digits (6, 5) from overlapping parts, whose inner edges would show up
+        let local = outline.normalized(using: .winding).copy(using: &shift)
+        let size = CGRect(origin: .zero, size: area.size)
         CATransaction.begin(); CATransaction.setDisableActions(true)
-        defer { CATransaction.commit() }
-        guard !path.isEmpty else { return }
-        let b = path.boundingBox.insetBy(dx: -6, dy: -6)
-        var move = CGAffineTransform(translationX: -b.minX, y: -b.minY)
-        let local = path.copy(using: &move)
-        let size = CGRect(origin: .zero, size: b.size)
-        for l in [shadowL, body, shine, rim] as [CALayer] { l.frame = b }
-        shadowL.shadowPath = local
-        body.path = local; body.fillColor = NSColor.white.withAlphaComponent(0.25 * g).cgColor
-        let k = min(1, 0.25 + g)
-        shadowL.shadowOpacity = Float(0.15 + 0.3 * g)
-        shine.colors = [NSColor.white.withAlphaComponent(0.1 + 0.55 * g).cgColor, NSColor.white.withAlphaComponent(0.03).cgColor]
-        rim.colors = [0.95, 0.12, 0.5].map { NSColor.white.withAlphaComponent($0 * k).cgColor }
-        rimMask.lineWidth = 1.2 + 1.2 * g
-        shineMask.frame = size; shineMask.path = local
-        rimMask.frame = size; rimMask.path = local
+        glass.frame = area
+        glass.setTint(NSColor.white.withAlphaComponent(0.012 + 0.10 * g))   // 0.012 is the player card's own tint; even at 1 it stays clear, not grey
+        halo.frame = area; halo.path = local
+        // everything outside the digits (an even-odd hole where they are), so only the soft shadow around them shows
+        let pad: CGFloat = 60
+        let outside = CGMutablePath()
+        outside.addRect(CGRect(x: 0, y: 0, width: area.width + 2 * pad, height: area.height + 2 * pad))
+        if let local { outside.addPath(local, transform: CGAffineTransform(translationX: pad, y: pad)) }
+        haloMask.frame = CGRect(x: -pad, y: -pad, width: area.width + 2 * pad, height: area.height + 2 * pad)
+        haloMask.path = outside
+        bevel.frame = area
+        bevel.opacity = Float(g)   // the slider: 0 = see-through glass with no sheen, 1 = the fully lit, rounded glass
+        // the lighting is worked out per pixel, so only when the time, font or place changes, and off the main thread
+        let sig = lines.map { $0.text.string + "\(($0.text.attribute(.font, at: 0, effectiveRange: nil) as? NSFont)?.pointSize ?? 0)" }.joined(separator: "|") + "\(area)"
+        if sig != bevelKey, let path = local {
+            bevelKey = sig
+            let sz = area.size
+            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+                let img = Self.bevelImage(path, size: sz, scale: 2)
+                DispatchQueue.main.async { if self?.bevelKey == sig { self?.bevel.contents = img } }
+            }
+        }
+        fillMask.frame = size; fillMask.path = local
+        edge.frame = area
+        edgeMask.frame = size; edgeMask.path = local
+        CATransaction.commit()
+    }
+}
+
+extension DigitGlassView {
+    /// The glass's thickness as a picture: the digits are treated as a smooth rounded hump (their shape, blurred), and light from the
+    /// top left and a dimmer one from the bottom right are reflected off its slopes. White where a slope faces a light, darker rims on
+    /// the far side, and a faint glow where the edge turns steeply. Transparent outside the digits; `scale` pixels per point.
+    static func bevelImage(_ path: CGPath, size: CGSize, scale: CGFloat) -> CGImage? {
+        let W = Int(size.width * scale), H = Int(size.height * scale)
+        guard W > 8, H > 8 else { return nil }
+        var cov = [UInt8](repeating: 0, count: W * H)
+        cov.withUnsafeMutableBytes { buf in
+            guard let ctx = CGContext(data: buf.baseAddress, width: W, height: H, bitsPerComponent: 8, bytesPerRow: W,
+                                      space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return }
+            ctx.scaleBy(x: scale, y: scale)
+            ctx.addPath(path)
+            ctx.setFillColor(gray: 1, alpha: 1)
+            ctx.fillPath()
+        }
+        let mask = cov.map { Float($0) / 255 }
+
+        func blur(_ src: [Float], sigma: Float) -> [Float] {   // separable gaussian, edges clamped
+            let r = Int((3 * sigma).rounded(.up))
+            var k = (-r...r).map { expf(-Float($0 * $0) / (2 * sigma * sigma)) }
+            let total = k.reduce(0, +); k = k.map { $0 / total }
+            var tmp = [Float](repeating: 0, count: W * H), out = tmp
+            for y in 0..<H { for x in 0..<W {
+                var s: Float = 0
+                for i in -r...r { s += src[y * W + min(max(x + i, 0), W - 1)] * k[i + r] }
+                tmp[y * W + x] = s } }
+            for y in 0..<H { for x in 0..<W {
+                var s: Float = 0
+                for i in -r...r { s += tmp[min(max(y + i, 0), H - 1) * W + x] * k[i + r] }
+                out[y * W + x] = s } }
+            return out
+        }
+        let tight = blur(mask, sigma: 2.0 * Float(scale) / 2), broad = blur(mask, sigma: 5 * Float(scale) / 2)
+        let height = zip(tight, broad).map { 0.6 * $0 + 0.4 * $1 }
+
+        func norm(_ v: (Float, Float, Float)) -> (Float, Float, Float) {
+            let l = max(sqrtf(v.0 * v.0 + v.1 * v.1 + v.2 * v.2), 1e-6); return (v.0 / l, v.1 / l, v.2 / l)
+        }
+        // directions are (right, down the picture, towards the viewer): lights at the top left and, dimmer, the bottom right
+        let l1 = norm((-0.5, -0.6, 0.62)), l2 = norm((0.55, 0.65, 0.5))
+        let h1 = norm((l1.0, l1.1, l1.2 + 1)), h2 = norm((l2.0, l2.1, l2.2 + 1))
+        let slope: Float = 9
+        var px = [UInt8](repeating: 0, count: W * H * 4)
+        for y in 1..<(H - 1) { for x in 1..<(W - 1) {
+            let i = y * W + x
+            let m = mask[i]
+            guard m > 0.01 else { continue }
+            let gx = (height[i + 1] - height[i - 1]) * 0.5 * slope, gy = (height[i + W] - height[i - W]) * 0.5 * slope
+            let n = norm((-gx, -gy, 1))
+            let s1 = powf(max(0, n.0 * h1.0 + n.1 * h1.1 + n.2 * h1.2), 16) * 1.25
+            let s2 = powf(max(0, n.0 * h2.0 + n.1 * h2.1 + n.2 * h2.2), 16) * 0.8
+            let glow = powf(1 - n.2, 2.2) * 0.12                                        // steep edge: a faint sheen, so the stroke's middle stays clear
+            let facing = n.0 * l1.0 + n.1 * l1.1                                        // < 0: this slope turns away from the main light
+            let dark = max(0, -facing) * min(1, (1 - n.2) * 3) * 0.45
+            let hi = min(1, s1 * 1.1 + s2 + glow), lo = min(0.6, dark)
+            let a = min(1, hi + lo) * m
+            let o = i * 4
+            let c = UInt8(min(1, hi * m) * 255), al = UInt8(a * 255)
+            px[o] = min(c, al); px[o + 1] = min(c, al); px[o + 2] = min(c, al); px[o + 3] = al   // premultiplied white
+        } }
+        guard let provider = CGDataProvider(data: Data(px) as CFData) else { return nil }
+        return CGImage(width: W, height: H, bitsPerComponent: 8, bitsPerPixel: 32, bytesPerRow: W * 4, space: CGColorSpaceCreateDeviceRGB(),
+                       bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue), provider: provider, decode: nil,
+                       shouldInterpolate: true, intent: .defaultIntent)
     }
 }
 
@@ -1459,10 +1745,26 @@ final class LockScreenController {
         card.setFullscreen(on)
     }
 
+    private var shown = false
+    private var watchdog: Timer?
+    private static var lockKeyWorks = false
+    /// True while macOS reports the screen as locked (the key is missing while unlocked).
+    private static var screenLocked: Bool {
+        ((CGSessionCopyCurrentDictionary() as? [String: Any])?["CGSSessionScreenIsLocked"] as? NSNumber)?.boolValue ?? false
+    }
+
     private func show() {
         let enabled = UserDefaults.standard.object(forKey: "lockScreenPlayer") as? Bool ?? true
         guard enabled else { return }
         media.refresh()
+        guard !shown else { return }   // a repeated lock notice: replaying the card's entrance made it twitch
+        shown = true
+        // The lock/unlock notices can repeat or arrive late, which left the player over the unlocked desktop. Once macOS has been
+        // seen reporting the lock, its real state decides; if it never does, the notices alone do, as before.
+        watchdog?.invalidate()
+        watchdog = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
+            if Self.screenLocked { Self.lockKeyWorks = true } else if Self.lockKeyWorks { self?.hide() }
+        }
         fullscreen = false
         backdrop.locked = true
         card.setActive(true)
@@ -1471,6 +1773,8 @@ final class LockScreenController {
     }
 
     private func hide() {
+        shown = false
+        watchdog?.invalidate(); watchdog = nil
         fullscreen = false
         backdrop.locked = false
         backdrop.setActive(false)               // instant, no animation, on unlock
